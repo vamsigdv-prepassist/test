@@ -45,10 +45,18 @@ export default function CloudVaultManager() {
       setIsDeleting(note.id || "processing");
       
       try {
-         if (note.fileUrl && note.fileUrl.includes("firebasestorage")) {
+         if (note.fileUrl) {
             try {
-               const fileRef = ref(storage, note.fileUrl);
-               await deleteObject(fileRef);
+               if (note.fileUrl.includes("firebasestorage")) {
+                  const fileRef = ref(storage, note.fileUrl);
+                  await deleteObject(fileRef);
+               } else if (note.fileUrl.includes("supabase.co")) {
+                  const urlParts = note.fileUrl.split("/cloud_vault/");
+                  if (urlParts.length > 1) {
+                     const filePath = urlParts[1];
+                     await supabase.storage.from("cloud_vault").remove([filePath]);
+                  }
+               }
             } catch (storageError) {
                console.error("Storage Purge Missed/Skipped:", storageError);
             }

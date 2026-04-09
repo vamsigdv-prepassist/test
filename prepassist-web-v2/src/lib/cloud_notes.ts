@@ -1,5 +1,6 @@
 import { db, storage } from "./firebase";
 import { collection, query, where, getDocs, doc, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
+import { supabase } from "./supabase";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 
 // Foundational UPSC Classification Nodes
@@ -41,11 +42,22 @@ export interface CloudNote {
 
 export const uploadNoteStorage = async (file: File, userId: string): Promise<string> => {
    const ext = file.name.split('.').pop();
-   const storageRef = ref(storage, `cloud_vault/${userId}/${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`);
+   const cleanName = `${userId}/${Date.now()}_${Math.random().toString(36).substring(7)}.${ext}`;
    
-   await uploadBytes(storageRef, file);
-   const downloadUrl = await getDownloadURL(storageRef);
-   return downloadUrl;
+   const { data, error } = await supabase.storage
+      .from('cloud_vault')
+      .upload(cleanName, file, { upsert: false });
+      
+   if (error) {
+      console.error("Supabase Storage Upload Error:", error);
+      throw new Error(`STORAGE_CRASH: ${error.message}`);
+   }
+   
+   const { data: { publicUrl } } = supabase.storage
+      .from('cloud_vault')
+      .getPublicUrl(cleanName);
+      
+   return publicUrl;
 };
 
 export const saveCloudNote = async (note: CloudNote): Promise<string> => {
