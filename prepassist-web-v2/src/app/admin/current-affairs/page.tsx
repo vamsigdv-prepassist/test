@@ -4,8 +4,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Database, Plus, Save, Loader2, Search, CheckCircle2, FileText, UploadCloud, BrainCircuit, X, CalendarDays, Layers, Trash2 } from "lucide-react";
 import { addCurrentAffair, bulkAddCurrentAffairs, fetchRecentCurrentAffairs, deleteCurrentAffair, CurrentAffair } from "@/lib/currentAffairs";
-import { storage } from "@/lib/firebase";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+
 
 export default function CurrentAffairsAdmin() {
   const [tab, setTab] = useState<"manual" | "bulk">("bulk");
@@ -82,12 +81,28 @@ export default function CurrentAffairsAdmin() {
      setExtractedAffairs([]);
 
      try {
-       // 1. Upload large PDF securely to Firebase Storage to bypass Vercel 4.5MB Serverless Limit natively
-       const storageRef = ref(storage, `admin-temp/newspapers/${Date.now()}_${bulkFile.name}`);
-       const snapshot = await uploadBytes(storageRef, bulkFile);
-       const fileUrl = await getDownloadURL(snapshot.ref);
+       // 1. Generate GCS Pre-Signed Upload Token securely via backend, completely skipping Client Firebase Web SDK network blocks
+       const urlRes = await fetch(`/api/admin/generate-upload-url`, {
+           method: "POST",
+           headers: { "Content-Type": "application/json" },
+           body: JSON.stringify({ filename: bulkFile.name })
+       });
+       
+       if (!urlRes.ok) throw new Error("GCS Signed URL Error: " + urlRes.statusText);
+       const { signedUrl, fileUrl } = await urlRes.json();
 
-       // 2. Transmit only the URL footprint to prevent an API Gateway Crash
+       // 2. Transmit raw bytes directly to storage API leveraging Signed Token bypass
+       const uploadRes = await fetch(signedUrl, {
+           method: "PUT",
+           body: bulkFile,
+           headers: {
+             "Content-Type": bulkFile.type || "application/pdf"
+           }
+       });
+
+       if (!uploadRes.ok) throw new Error("Native GCS Upload Blocked: " + uploadRes.statusText);
+
+       // 3. Ping AI backend securely with merely the file footprint
        const res = await fetch("/api/admin/process-newspaper", {
           method: "POST",
           headers: {
