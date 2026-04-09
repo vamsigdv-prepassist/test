@@ -1,5 +1,5 @@
 import { db, storage } from "./firebase";
-import { collection, query, where, getDocs, doc, setDoc, deleteDoc, serverTimestamp, orderBy } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, setDoc, deleteDoc, writeBatch } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 
 // Foundational UPSC Classification Nodes
@@ -76,22 +76,12 @@ export const saveCloudNote = async (note: CloudNote): Promise<string> => {
        if (firestorePayload[key] === undefined) delete firestorePayload[key];
     });
 
-    // Parallel sync to Global Document Cloud explicitly for Hashtag RAG syncing natively. 
-    try {
-        await setDoc(doc(db, "cloud_notes", noteId), firestorePayload);
-    } catch(globalErr) {
-        console.error("Global Database Parallel Sync Failed:", globalErr);
-    }
-    
-    const existing = JSON.parse(localStorage.getItem(`local_notes_vault_${note.userId}`) || "[]");
-    const index = existing.findIndex((n: any) => n.id === noteId);
-    if (index >= 0) existing[index] = finalNote;
-    else existing.push(finalNote);
-    
-    localStorage.setItem(`local_notes_vault_${note.userId}`, JSON.stringify(existing));
+    // Make it fully sync to Firestore
+    await setDoc(doc(db, "cloud_notes", noteId), firestorePayload);
+
     return noteId;
   } catch (error) {
-    console.error("Local Vault Save Error:", error);
+    console.error("Cloud Vault Save Error:", error);
     throw error;
   }
 };
@@ -107,7 +97,12 @@ export const formatBytes = (bytes: number, decimals = 2) => {
 
 export const fetchCloudNotes = async (userId: string): Promise<CloudNote[]> => {
   try {
-    const existing: CloudNote[] = JSON.parse(localStorage.getItem(`local_notes_vault_${userId}`) || "[]");
+    const q = query(collection(db, "cloud_notes"), where("userId", "==", userId));
+    const snap = await getDocs(q);
+    const existing: CloudNote[] = [];
+    snap.forEach(doc => {
+        existing.push(doc.data() as CloudNote);
+    });
     
     // Natively sort desc by createdAt
     return existing.sort((a, b) => {
@@ -116,7 +111,7 @@ export const fetchCloudNotes = async (userId: string): Promise<CloudNote[]> => {
        return timeB - timeA;
     });
   } catch (error) {
-    console.error("Local Vault Fetch Error:", error);
+    console.error("Cloud Vault Fetch Error:", error);
     throw error;
   }
 };
@@ -179,38 +174,39 @@ export const checkTopicUpdates = async (tags: string[] = []): Promise<UpdatePayl
 
 export const deleteCloudNote = async (note: CloudNote): Promise<void> => {
    try {
-      const existing = JSON.parse(localStorage.getItem(`local_notes_vault_${note.userId}`) || "[]");
-      const updated = existing.filter((n: any) => n.id !== note.id);
-      localStorage.setItem(`local_notes_vault_${note.userId}`, JSON.stringify(updated));
+      if (note.id) {
+         await deleteDoc(doc(db, "cloud_notes", note.id));
+      }
    } catch(error) {
-      console.error("Local Vault Deletion Error:", error);
+      console.error("Cloud Vault Deletion Error:", error);
       throw error;
    }
 };
 
 export const bulkUpdateCloudNotes = async (userId: string, noteIds: string[], updatePayload: Partial<CloudNote>): Promise<void> => {
    try {
-      const existing: CloudNote[] = JSON.parse(localStorage.getItem(`local_notes_vault_${userId}`) || "[]");
-      const mapped = existing.map(n => {
-         if (n.id && noteIds.includes(n.id)) {
-            return { ...n, ...updatePayload };
-         }
-         return n;
+      const batch = writeBatch(db);
+      noteIds.forEach(id => {
+         const sfRef = doc(db, "cloud_notes", id);
+         batch.update(sfRef, updatePayload);
       });
-      localStorage.setItem(`local_notes_vault_${userId}`, JSON.stringify(mapped));
+      await batch.commit();
    } catch (error) {
-      console.error("Local Vault Bulk Update Error:", error);
+      console.error("Cloud Vault Bulk Update Error:", error);
       throw error;
    }
 };
 
 export const bulkDeleteCloudNotes = async (userId: string, noteIds: string[]): Promise<void> => {
    try {
-      const existing: CloudNote[] = JSON.parse(localStorage.getItem(`local_notes_vault_${userId}`) || "[]");
-      const filtered = existing.filter(n => !(n.id && noteIds.includes(n.id)));
-      localStorage.setItem(`local_notes_vault_${userId}`, JSON.stringify(filtered));
+      const batch = writeBatch(db);
+      noteIds.forEach(id => {
+         const sfRef = doc(db, "cloud_notes", id);
+         batch.delete(sfRef);
+      });
+      await batch.commit();
    } catch (error) {
-      console.error("Local Vault Bulk Deletion Error:", error);
+      console.error("Cloud Vault Bulk Deletion Error:", error);
       throw error;
    }
 };
