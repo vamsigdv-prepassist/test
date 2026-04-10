@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300; // Allows up to 5 minutes for massive payload inference
@@ -107,86 +108,85 @@ export async function POST(req: Request) {
     }
 
     const openRouterKey = process.env.OPENROUTER_API_KEY;
-    if (!openRouterKey) {
-       console.warn("No OpenRouter Key Found. Yielding mock dataset for RAG PDF extraction.");
+    const googleApiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "";
+
+    const prompt = `You are a top-tier UPSC Civil Services Examiner analyzing today's ${newspaperType}. 
+    Extract the MOST EXHAUSTIVE, critical high-yield topics from this newspaper's text.
+    You MUST extract a MINIMUM of 10 to 12 completely distinct, highly important articles. 
+
+    You MUST output your ENTIRE response as a RAW JSON array of objects.
+    Each object MUST have:
+    - title (String): The exact UPSC Syllabus topic name.
+    - tags (Array of Strings): e.g. ["GS2", "International Relations"].
+    - content (String): A detailed UPSC Mains analysis.
+    
+    Format using explicit sub-headings within the 'content' string.`;
+
+    let resultText = "";
+
+    // TRY GEMINI 2.5 FLASH FIRST (Higher Context Window & Speed)
+    if (googleApiKey) {
+       console.log("Engaging Gemini 2.5 Flash for Newspaper Synthesis...");
+       try {
+           const genAI = new GoogleGenerativeAI(googleApiKey);
+           const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+           const genResult = await model.generateContent([prompt, extractedText]);
+           resultText = genResult.response.text().trim();
+       } catch (gError: any) {
+           console.warn("Gemini 2.5 News Sync failed, falling back:", gError.message);
+       }
+    }
+
+    // FALLBACK TO OPENROUTER IF GEMINI FAILED
+    if (!resultText && openRouterKey) {
+        console.log("Falling back to OpenRouter (GPT-4o) for Newspaper Synthesis...");
+        const cleanKey = openRouterKey.replace(/["']/g, "").trim();
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${cleanKey}`,
+            "HTTP-Referer": "http://localhost:3000",
+            "X-Title": "PrepAssist Admin",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "openai/gpt-4o",
+            messages: [
+               { role: "system", content: prompt },
+               { role: "user", content: extractedText }
+            ],
+            temperature: 0.1,
+            max_tokens: 12000
+          })
+        });
+
+        if (response.ok) {
+           const data = await response.json();
+           resultText = data.choices?.[0]?.message?.content?.trim() || "";
+        }
+    }
+
+    // FINAL MOCK FALLBACK (If both AI engines fail or keys missing)
+    if (!resultText) {
+       console.warn("All AI channels exhausted. Yielding mock dataset.");
        return NextResponse.json({
          results: [
            { 
              title: "Election Commission Reform Verdict", 
              source: newspaperType, 
              tags: ["GS2", "Polity", "Constitutional Bodies"], 
-             content: "The Supreme Court delivered a landmark ruling altering the appointment mechanism for the Chief Election Commissioner (CEC) and Election Commissioners (ECs). By instituting a collegium model comprising the Prime Minister, Leader of Opposition, and the Chief Justice of India, the court asserts the absolute independence of the election machinery.\n\nFrom a GS2 perspective, this mitigates executive overreach and reinforces Article 324 structural autonomies. It mirrors the Vineet Narain judgment's intent to shield specialized bodies. Candidates must link this to the broader trajectory of democratic decentralization.\n\nLooking forward, Parliament may enact a law circumscribing these guidelines. However, the foundational blueprint of electoral impartiality as part of the 'Basic Structure' remains deeply solidified." 
+             content: "The Supreme Court delivered a landmark ruling altering the appointment mechanism for the Chief Election Commissioner (CEC) and Election Commissioners (ECs)..." 
            },
            { 
              title: "Green Hydrogen Mission Advancements", 
              source: newspaperType, 
              tags: ["GS3", "Environment", "Energy"], 
-             content: "The Ministry of New and Renewable Energy has unlocked the initial tranches of subsidies tailored for electrolyser manufacturing. This accelerates India's National Green Hydrogen Mission (NGHM) targeting 5 MMT production capacity by 2030, a vital node in cutting carbon intensity by 45%.\n\nEconomic viability hinges upon reducing the levelized cost of hydrogen to under $1.5/kg. The immediate infrastructural blockades include pure water scarcity and the high capital outlay for renewable integration.\n\nPolicy synthesis demands marrying this mission efficiently with the PLI schemes and the overarching Panchamrit COP26 pledges to achieve Net Zero by 2070." 
+             content: "The Ministry of New and Renewable Energy has unlocked the initial tranches of subsidies tailored for electrolyser manufacturing..." 
            }
          ],
          isMock: true
        });
     }
-
-    const prompt = `You are a top-tier UPSC Civil Services Examiner analyzing today's ${newspaperType}. 
-    Extract the MOST EXHAUSTIVE, critical high-yield topics from this newspaper's text.
-    You MUST extract a MINIMUM of 12 to 15 completely distinct, highly important articles. Do not stop at just 5. 
-
-    You MUST output your ENTIRE response as a RAW JSON array of objects. Do not wrap in markdown or backticks.
-    Each object MUST have:
-    - title (String): The exact UPSC Syllabus topic name.
-    - tags (Array of Strings): e.g. ["GS2", "International Relations"].
-    - content (String): A massively detailed, highly structured UPSC Mains Answer template analyzing the topic.
-    
-    For the 'content' string, you MUST output a deep minimum 300-word analysis formatting using explicit sub-headings and literal hyphen (-) bullet points. 
-    Use this EXACT structural blueprint for the content string:
-    
-    Context & Background
-    - [Detail the immediate reason this is in the news]
-    - [Provide historical or constitutional backing]
-    
-    Core Analysis & Implications
-    - [Analyze the political, economic, or social impacts]
-    - [Discuss the challenges or criticisms]
-    
-    Way Forward (Mains Conclusion)
-    - [Provide policy recommendations or Supreme Court/Committee judgements]
-    - [Final optimistic conclusion]
-    
-    Use explicit \n\n for paragraph spacing between sections.`;
-
-    const cleanKey = openRouterKey.replace(/["']/g, "").trim();
-
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${cleanKey}`,
-        "HTTP-Referer": "http://localhost:3000",
-        "X-Title": "PrepAssist Admin",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o",
-        messages: [
-           { role: "system", content: prompt },
-           { role: "user", content: extractedText }
-        ],
-        temperature: 0.1,
-        max_tokens: 12000
-      })
-    });
-
-    if (!response.ok) {
-       const errBody = await response.text();
-       throw new Error(`AI Processing failed: ${response.statusText}. OpenRouter Details: ${errBody}. (Key format start: ${cleanKey.substring(0, 5)}...)`);
-    }
-    const data = await response.json();
-    
-    if (!data.choices || data.choices.length === 0) {
-       throw new Error("OpenRouter API responded, but completely failed to generate any tokens. Details: " + JSON.stringify(data));
-    }
-
-    let resultText = data.choices[0]?.message?.content?.trim();
     if (!resultText || resultText === "[]") {
        const preview = extractedText.substring(0, 300).replace(/\r?\n|\r/g, ' ');
        throw new Error(`The AI successfully read the document but output 0 arrays! This usually means the PDF text is completely corrupted by custom fonts. \n\nRAW TEXT PREVIEW RECEIVED BY AI: "${preview}..."`);
