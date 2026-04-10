@@ -30,5 +30,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "prepassist-main", "prepassist_mobile", "prepassist_admin_mobile", "android", "ios"]
+  "exclude": ["node_modules", "prepassist-main", "prepassist_mobile", "prepassist_admin_mobile", "android", "ios", "prepassist-mobile-v2", "prepassist-web-v2"]
 }
