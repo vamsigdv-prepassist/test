@@ -7,6 +7,31 @@ import { doc, getDoc } from 'firebase/firestore';
 // Native aggressive timeout extension for heavy PDF document arrays.
 export const maxDuration = 60; 
 
+/**
+ * Native Resilience Helper: Implementing multi-attempt exponential backoff for 2026 free tiers.
+ */
+async function executeWithResilience<T>(fn: () => Promise<T>, label: string, retries = 3): Promise<T> {
+   let lastError: any;
+   for (let i = 0; i < retries; i++) {
+      try {
+         return await fn();
+      } catch (error: any) {
+         lastError = error;
+         const isRateLimit = error?.message?.includes("429") || error?.status === 429;
+         const isPotentialTransient = error?.status >= 500 || error?.message?.includes("fetch");
+         
+         if ((isRateLimit || isPotentialTransient) && i < retries - 1) {
+            const waitTime = (i + 1) * 4000; // 4s, 8s, 12s backoff
+            console.warn(`[${label}] Resilience Triggered (Attempt ${i+1}/${retries}). Error: ${error.message}. Waiting ${waitTime}ms...`);
+            await new Promise(r => setTimeout(r, waitTime));
+            continue;
+         }
+         throw error;
+      }
+   }
+   throw lastError;
+}
+
 function bufferToGenerativePart(buffer: Buffer, mimeType: string) {
     return {
         inlineData: {
@@ -45,16 +70,31 @@ export async function POST(req: Request) {
         const buffer = Buffer.from(arrayBuffer);
         const pdfPart = bufferToGenerativePart(buffer, "application/pdf");
 
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
+        const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: 'v1beta' });
         const prompt = "Extract absolutely all text mechanically from this academic PDF document exactly matching its linear layout natively. Do not summarize, skip, or format using markdown. Process and extract raw content seamlessly across every page.";
+        let responseText = "";
 
-        const result = await model.generateContent([prompt, pdfPart]);
-        const responseText = result.response.text();
-
-        if (!responseText || responseText.length < 50) {
-            throw new Error("Extraction architecture yielded insufficient matrices. Document may be natively locked or pure raster.");
+        try {
+           const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+           const result = await executeWithResilience(() => model.generateContent([prompt, pdfPart]), "Tier 1: 2.5 Flash");
+           responseText = result.response.text();
+        } catch (e: any) {
+           console.warn("Tier 1 Failed, trying Tier 2 (1.5 Flash):", e.message);
+           try {
+              const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+              const result = await executeWithResilience(() => model.generateContent([prompt, pdfPart]), "Tier 2: 1.5 Flash");
+              responseText = result.response.text();
+           } catch (e2: any) {
+              console.warn("Tier 2 Failed, trying Tier 3 (1.5 Pro):", e2.message);
+              try {
+                 const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+                 const result = await executeWithResilience(() => model.generateContent([prompt, pdfPart]), "Tier 3: 1.5 Pro");
+                 responseText = result.response.text();
+              } catch (ultimateError: any) {
+                 console.error("CRITICAL: All Admin Extraction Tiers Exhausted.", ultimateError);
+                 throw new Error(`Fatal Extraction Failure: ${ultimateError.message}`);
+              }
+           }
         }
 
         return NextResponse.json({ success: true, text: responseText });

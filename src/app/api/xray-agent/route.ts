@@ -6,6 +6,33 @@ import { deductCredit } from '@/lib/credits';
 import { db } from '@/lib/firebase';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 
+export const maxDuration = 60;
+
+/**
+ * Native Resilience Helper: Implementing multi-attempt exponential backoff for 2026 free tiers.
+ */
+async function executeWithResilience<T>(fn: () => Promise<T>, label: string, retries = 3): Promise<T> {
+   let lastError: any;
+   for (let i = 0; i < retries; i++) {
+      try {
+         return await fn();
+      } catch (error: any) {
+         lastError = error;
+         const isRateLimit = error?.message?.includes("429") || error?.status === 429;
+         const isPotentialTransient = error?.status >= 500 || error?.message?.includes("fetch");
+         
+         if ((isRateLimit || isPotentialTransient) && i < retries - 1) {
+            const waitTime = (i + 1) * 4000; // 4s, 8s, 12s backoff
+            console.warn(`[${label}] Resilience Triggered (Attempt ${i+1}/${retries}). Error: ${error.message}. Waiting ${waitTime}ms...`);
+            await new Promise(r => setTimeout(r, waitTime));
+            continue;
+         }
+         throw error;
+      }
+   }
+   throw lastError;
+}
+
 export async function POST(req: Request) {
   try {
     const formData = await req.formData();
@@ -45,7 +72,7 @@ export async function POST(req: Request) {
     if (!apiKey) {
       return NextResponse.json({ error: "Native Google API Credentials missing for Agent Synthesis." }, { status: 500 });
     }
-    const genAI = new GoogleGenerativeAI(apiKey);
+    const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: 'v1beta' });
 
     // PHASE 1: Parse the file natively
     let extractedText = "";
@@ -57,26 +84,37 @@ export async function POST(req: Request) {
     const isPdf = file.type === "application/pdf" || (file.name && file.name.endsWith(".pdf"));
     const isImage = file.type.startsWith("image/");
 
-    if (isPdf || isImage) {
-      try {
-         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-         const prompt = "Extract literally all textual data, words, numbers, and references exactly as written from this document or image. Provide only the raw transcription.";
-         
-         const mimeType = isPdf ? "application/pdf" : file.type;
+     if (isPdf || isImage) {
+      const mimeType = isPdf ? "application/pdf" : file.type;
+      const config = {
+         inlineData: {
+            data: buffer.toString("base64"),
+            mimeType: mimeType
+         }
+      };
+      const prompt = "Extract absolutely all text exactly as written from this document. Provide only raw transcription. No filler.";
 
-         const config = {
-            inlineData: {
-               data: buffer.toString("base64"),
-               mimeType: mimeType
-            }
-         };
-         
-         // Fix: Ensure Part array exact mappings
-         const result = await model.generateContent([{ text: prompt }, config]);
+      try {
+         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+         const result = await executeWithResilience(() => model.generateContent([{ text: prompt }, config]), "Tier 1: 2.5 Flash");
          extractedText = result.response.text();
       } catch (e: any) {
-         console.error("Multimodal Extraction Error:", e);
-         extractedText = "Fallback: Document Extraction Native Engine Failed.";
+         console.warn("Tier 1 Failed, trying Tier 2 (2.0 Flash):", e.message);
+         try {
+            const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+            const result = await executeWithResilience(() => model.generateContent([{ text: prompt }, config]), "Tier 2: 2.0 Flash");
+            extractedText = result.response.text();
+         } catch (e2: any) {
+            console.warn("Tier 2 Failed, trying Tier 3 (1.5 Pro):", e2.message);
+            try {
+               const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+               const result = await executeWithResilience(() => model.generateContent([{ text: prompt }, config]), "Tier 3: 1.5 Pro");
+               extractedText = result.response.text();
+            } catch (ultimateError: any) {
+               console.error("CRITICAL: All Generative Extraction Tiers Exhausted.", ultimateError);
+               extractedText = `Fatal Extraction Error. System Diagnostics: ${ultimateError.message.substring(0, 100)}`;
+            }
+         }
       }
     } else {
       extractedText = "Unsupported MimeType fallback.";
@@ -140,18 +178,27 @@ export async function POST(req: Request) {
       }
     `;
 
-    const model = genAI.getGenerativeModel({ 
-       model: "gemini-1.5-flash",
-       systemInstruction: `You are the absolute UPSC Master Mentor for ${subject}. 
-       Your goal is to assist aspirants with conceptual clarity and current affairs integration natively.
-       Core Persona Rules:
-       - Incorporate retrieved RAG contexts naturally into the response if provided.
-       - Map perfectly to GS Papers.
-       - Provide analytical & objective viewpoints.
-       - NEVER use conversational filler. OUTPUT ONLY flat JSON strings for the 5 requested keys. Do not nest objects.`
-    });
-
-    const result = await model.generateContent(agentPrompt);
+     let result;
+     try {
+       const model = genAI.getGenerativeModel({ 
+          model: "gemini-2.5-flash",
+          systemInstruction: `You are the absolute UPSC Master Mentor for ${subject}. 
+          Your goal is to assist aspirants with conceptual clarity and current affairs integration natively.
+          Core Persona Rules:
+          - Incorporate retrieved RAG contexts naturally into the response if provided.
+          - Map perfectly to GS Papers.
+          - Provide analytical & objective viewpoints.
+          - NEVER use conversational filler. OUTPUT ONLY flat JSON strings for the 5 requested keys. Do not nest objects.`
+       });
+       result = await executeWithResilience(() => model.generateContent(agentPrompt), "Synthesis Prime (G2.5)");
+    } catch (flashError) {
+       console.warn("Gemini 2.5 Synthesis fail, trying Stable 2.0 fallback:", flashError);
+       const fallbackModel = genAI.getGenerativeModel({ 
+          model: "gemini-2.0-flash",
+          systemInstruction: `You are the absolute UPSC Master Mentor for ${subject}.`
+       });
+       result = await executeWithResilience(() => fallbackModel.generateContent(agentPrompt), "Synthesis Stable (G2.0)");
+    }
     const responseText = result.response.text().trim();
     
     // Hardened JSON Extractor Regex to catch Gemini conversational wrappers
