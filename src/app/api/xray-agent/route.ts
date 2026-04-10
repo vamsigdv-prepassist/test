@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 
     if (isPdf || isImage) {
       try {
-         const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+         const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
          const prompt = "Extract literally all textual data, words, numbers, and references exactly as written from this document or image. Provide only the raw transcription.";
          
          const mimeType = isPdf ? "application/pdf" : file.type;
@@ -141,7 +141,7 @@ export async function POST(req: Request) {
     `;
 
     const model = genAI.getGenerativeModel({ 
-       model: "gemini-2.5-flash",
+       model: "gemini-1.5-flash",
        systemInstruction: `You are the absolute UPSC Master Mentor for ${subject}. 
        Your goal is to assist aspirants with conceptual clarity and current affairs integration natively.
        Core Persona Rules:
