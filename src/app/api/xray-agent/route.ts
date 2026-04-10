@@ -80,7 +80,7 @@ export async function POST(req: Request) {
     if (!apiKey) {
       return NextResponse.json({ error: "Native Google API Credentials missing for Agent Synthesis." }, { status: 500 });
     }
-    const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: 'v1beta' });
+    const genAI = new GoogleGenerativeAI(apiKey);
 
     // PHASE 1: Parse the file natively
     let extractedText = "";

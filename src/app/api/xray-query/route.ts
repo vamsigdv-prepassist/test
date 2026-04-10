@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Native Fallback Engine Initialization
 const apiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || "";
-const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: 'v1beta' });
+const genAI = new GoogleGenerativeAI(apiKey);
 
 async function executeWithResilience<T>(fn: () => Promise<T>, label: string, retries = 3): Promise<T> {
    try {
